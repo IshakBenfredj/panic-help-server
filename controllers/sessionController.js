@@ -12,8 +12,8 @@ export const getDoctorSessions = async (req, res) => {
   try {
     const doctorId = req.user._id;
     const sessions = await VideoSession.find({ doctor: doctorId })
-      .populate("patient", "fullName phone")
-      .sort({ date: 1, time: 1 });
+      .populate("patient", "fullName")
+      .sort({ createdAt: -1 });
 
     res.status(200).json({ sessions });
   } catch (error) {
@@ -31,7 +31,7 @@ export const getPatientSessions = async (req, res) => {
     const patientId = req.user._id;
     const sessions = await VideoSession.find({ patient: patientId })
       .populate("doctor", "fullName phone specializations")
-      .sort({ date: 1, time: 1 });
+      .sort({ createdAt: -1 });
 
     res.status(200).json({ sessions });
   } catch (error) {
@@ -126,27 +126,40 @@ export const reserveSession = async (req, res) => {
       status: "pending",
     });
 
-    session.streamCallId = `call_${session._id}`;
-    session.streamChannelId = `chat_${session._id}`;
-    await session.save();
+    // Check if an existing session between this patient and doctor already has a streamChannelId
+    const existingChatSession = await VideoSession.findOne({
+      doctor: doctorId,
+      patient: patientId,
+      streamChannelId: { $ne: null },
+    });
 
-    // Create the chat channel on the Stream backend to give both users access
-    try {
-      const serverClient = StreamChat.getInstance(
-        process.env.STREAM_API_KEY,
-        process.env.STREAM_API_SECRET,
-      );
-      const channel = serverClient.channel(
-        "messaging",
-        session.streamChannelId,
-        {
-          created_by_id: patientId.toString(),
-          members: [patientId.toString(), doctorId.toString()],
-        },
-      );
-      await channel.create();
-    } catch (streamErr) {
-      console.error("Stream channel creation failed:", streamErr);
+    if (existingChatSession) {
+      session.streamChannelId = existingChatSession.streamChannelId;
+      session.streamCallId = `call_${session._id}`;
+      await session.save();
+    } else {
+      session.streamCallId = `call_${session._id}`;
+      session.streamChannelId = `chat_${session._id}`;
+      await session.save();
+
+      // Create the chat channel on the Stream backend to give both users access
+      try {
+        const serverClient = StreamChat.getInstance(
+          process.env.STREAM_API_KEY,
+          process.env.STREAM_API_SECRET,
+        );
+        const channel = serverClient.channel(
+          "messaging",
+          session.streamChannelId,
+          {
+            created_by_id: patientId.toString(),
+            members: [patientId.toString(), doctorId.toString()],
+          },
+        );
+        await channel.create();
+      } catch (streamErr) {
+        console.error("Stream channel creation failed:", streamErr);
+      }
     }
 
     res.status(200).json({
@@ -296,11 +309,9 @@ export const cancelSession = async (req, res) => {
     }
 
     if (sessionDateTime.getTime() < Date.now()) {
-      return res
-        .status(400)
-        .json({
-          message: "Cannot cancel a session whose time has already passed",
-        });
+      return res.status(400).json({
+        message: "Cannot cancel a session whose time has already passed",
+      });
     }
 
     session.status = "cancelled";
@@ -315,3 +326,138 @@ export const cancelSession = async (req, res) => {
     res.status(500).json({ message: t("SERVER_ERROR", lang) });
   }
 };
+
+// @desc    Patient cancels a pending session before doctor confirmation
+// @route   PUT /api/v1/session/:sessionId/patient-cancel
+// @access  Private (Patient)
+export const cancelPendingSessionPatient = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const { sessionId } = req.params;
+    const patientId = req.user._id;
+
+    const session = await VideoSession.findOne({
+      _id: sessionId,
+      patient: patientId,
+    });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    if (session.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Only pending sessions can be cancelled by patient" });
+    }
+
+    session.status = "cancelled";
+    await session.save();
+
+    res.status(200).json({
+      message: "Session request cancelled successfully",
+      session,
+    });
+  } catch (error) {
+    console.error(
+      "Session Controller Error (cancelPendingSessionPatient):",
+      error,
+    );
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};
+
+// @desc    Get upcoming and pending sessions for logged in doctor (today or later)
+// @route   GET /api/v1/session/mine/upcoming-and-pending
+// @access  Private (Doctor)
+export const getDoctorUpcomingAndPendingSessions = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const doctorId = req.user._id;
+
+    // Start of today (midnight UTC)
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    // Today's date string for exact-day match (YYYY-MM-DD)
+    const todayStr = today.toISOString().split("T")[0];
+
+    // Run all queries in parallel
+    const [upcomingAndPending, completedCount, todayCount, pendingCount] =
+      await Promise.all([
+        // 1. Upcoming (accepted) + pending sessions from today onwards
+        VideoSession.find({
+          doctor: doctorId,
+          date: { $gte: today },
+          status: { $in: ["pending", "accepted"] },
+        })
+          .populate("patient", "fullName")
+          .sort({ date: 1, time: 1 }),
+
+        // 2. All-time completed sessions count
+        VideoSession.countDocuments({
+          doctor: doctorId,
+          status: "completed",
+        }),
+
+        // 3. Today's accepted sessions count
+        VideoSession.countDocuments({
+          doctor: doctorId,
+          date: new Date(todayStr),
+          status: "accepted",
+        }),
+
+        // 4. All pending sessions count (not just today+)
+        VideoSession.countDocuments({
+          doctor: doctorId,
+          status: "pending",
+        }),
+      ]);
+
+    const upcoming = upcomingAndPending.filter((s) => s.status === "accepted");
+    const pending = upcomingAndPending.filter((s) => s.status === "pending");
+
+    res.status(200).json({
+      upcoming,
+      pending,
+      stats: {
+        today: todayCount,
+        pending: pendingCount,
+        completed: completedCount,
+      },
+    });
+  } catch (error) {
+    console.error("Session Controller (getDoctorUpcomingAndPendingSessions) Error:", error);
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};
+
+// @desc    Get upcoming (accepted) and pending sessions for logged in patient (today or later)
+// @route   GET /api/v1/session/my/upcoming-and-pending
+// @access  Private (Patient)
+export const getPatientUpcomingAndPendingSessions = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const patientId = req.user._id;
+
+    // Start of today (midnight UTC)
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    const sessions = await VideoSession.find({
+      patient: patientId,
+      date: { $gte: today },
+      status: { $in: ["pending", "accepted"] },
+    })
+      .populate("doctor", "fullName specializations")
+      .sort({ date: 1, time: 1 });
+
+    const upcoming = sessions.filter((s) => s.status === "accepted");
+    const pending = sessions.filter((s) => s.status === "pending");
+
+    res.status(200).json({ upcoming, pending, sessions });
+  } catch (error) {
+    console.error("Session Controller (getPatientUpcomingAndPendingSessions) Error:", error);
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};
+

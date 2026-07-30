@@ -81,3 +81,19 @@ export const getPatientProfile = async (req, res) => {
     res.status(500).json({ message: t("SERVER_ERROR", lang) });
   }
 };
+
+export const checkPatientAnswerQuestionnaire = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const patient = await Patient.findById(req.user._id);
+    if (!patient) {
+      return res.status(404).json({ message: t("USER_NOT_FOUND", lang) });
+    }
+    res.status(200).json({
+      hasAnswered: !!patient.questionnaireId,
+    });
+  } catch (error) {
+    console.error("Patient Controller Error:", error);
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};

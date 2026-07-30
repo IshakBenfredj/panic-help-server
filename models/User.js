@@ -35,6 +35,11 @@ const userSchema = new mongoose.Schema(
       enum: ["patient", "doctor", "admin"],
       required: true,
     },
+    subscription: {
+      plan: { type: String, default: "monthly_3500" },
+      expiresAt: { type: Date },
+      sessionsRemaining: { type: Number, default: 3 },
+    },
   },
   {
     timestamps: true,

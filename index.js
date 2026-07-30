@@ -16,8 +16,9 @@ import thoughtRoutes from "./routes/thoughtRoutes.js";
 
 import assessmentRoutes from "./routes/assessmentRoutes.js";
 import dashboardRoutes from "./routes/dashboardRoutes.js";
-
-// import job from "./cron.js";
+import subscriptionRoutes from "./routes/subscriptionRoutes.js";
+import * as subscriptionController from "./controllers/subscription.controller.js";
+import job from "./utils/cron.js";
 
 dotenv.config();
 
@@ -26,10 +27,23 @@ const app = express();
 // Middlewares
 app.use(cors());
 app.use(helmet());
+app.post(
+  "/api/v1/subscription/webhook",
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+  subscriptionController.handleSubscriptionWebhook,
+);
 app.use(morgan("dev"));
-app.use(express.json({ limit: "500mb" }));
+app.use(
+  express.json({
+    limit: "500mb",
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "500mb" }));
-// job.start();
+job.start();
 
 // Routes
 app.use("/api/v1/auth", authRoutes);
@@ -44,6 +58,7 @@ app.use("/api/v1/thought", thoughtRoutes);
 app.use("/api/v1/assessments", assessmentRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/v1/dashboard", dashboardRoutes);
+app.use("/api/v1/subscription", subscriptionRoutes);
 
 mongoose
   .connect(process.env.MONGODB_URI)
