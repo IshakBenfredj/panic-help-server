@@ -38,7 +38,6 @@ const userSchema = new mongoose.Schema(
     subscription: {
       plan: { type: String, default: "monthly_3500" },
       expiresAt: { type: Date },
-      sessionsRemaining: { type: Number, default: 3 },
     },
   },
   {

@@ -40,6 +40,28 @@ export const getPatientSessions = async (req, res) => {
   }
 };
 
+// @desc    Get a single session by ID
+// @route   GET /api/v1/session/:sessionId
+// @access  Private
+export const getSession = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const { sessionId } = req.params;
+    const session = await VideoSession.findById(sessionId)
+      .populate("doctor", "fullName phone specializations")
+      .populate("patient", "fullName phone");
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    res.status(200).json({ session });
+  } catch (error) {
+    console.error("Session Controller Error (getSession):", error);
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};
+
 // @desc    Get booked sessions for a specific doctor on a specific date
 // @route   GET /api/v1/session/doctor/:doctorId/booked?date=YYYY-MM-DD
 // @access  Private (Patient)
@@ -126,41 +148,28 @@ export const reserveSession = async (req, res) => {
       status: "pending",
     });
 
-    // Check if an existing session between this patient and doctor already has a streamChannelId
-    const existingChatSession = await VideoSession.findOne({
-      doctor: doctorId,
-      patient: patientId,
-      streamChannelId: { $ne: null },
-    });
+    // Always use the deterministic direct channel ID between this patient and doctor
+    const channelId = `direct_${patientId}_${doctorId}`;
+    session.streamChannelId = channelId;
+    session.streamCallId = `call_${session._id}`;
+    await session.save();
 
-    if (existingChatSession) {
-      session.streamChannelId = existingChatSession.streamChannelId;
-      session.streamCallId = `call_${session._id}`;
-      await session.save();
-    } else {
-      session.streamCallId = `call_${session._id}`;
-      session.streamChannelId = `chat_${session._id}`;
-      await session.save();
-
-      // Create the chat channel on the Stream backend to give both users access
-      try {
-        const serverClient = StreamChat.getInstance(
-          process.env.STREAM_API_KEY,
-          process.env.STREAM_API_SECRET,
-        );
-        const channel = serverClient.channel(
-          "messaging",
-          session.streamChannelId,
-          {
-            created_by_id: patientId.toString(),
-            members: [patientId.toString(), doctorId.toString()],
-          },
-        );
-        await channel.create();
-      } catch (streamErr) {
-        console.error("Stream channel creation failed:", streamErr);
-      }
+    // Ensure the Stream chat channel exists on Stream backend
+    try {
+      const serverClient = StreamChat.getInstance(
+        process.env.STREAM_API_KEY,
+        process.env.STREAM_API_SECRET,
+      );
+      const channel = serverClient.channel("messaging", channelId, {
+        created_by_id: patientId.toString(),
+        members: [patientId.toString(), doctorId.toString()],
+      });
+      await channel.create();
+    } catch (streamErr) {
+      console.error("Stream channel creation failed:", streamErr);
     }
+
+
 
     res.status(200).json({
       message: "Session reserved successfully",
@@ -179,6 +188,7 @@ export const acceptSession = async (req, res) => {
   const lang = getLang(req);
   try {
     const { sessionId } = req.params;
+    const { price, endTime } = req.body;
     const doctorId = req.user._id;
 
     const session = await VideoSession.findOne({
@@ -193,7 +203,15 @@ export const acceptSession = async (req, res) => {
       return res.status(400).json({ message: "Session is not pending" });
     }
 
-    session.status = "accepted";
+    session.price = price !== undefined ? Number(price) : null;
+    session.endTime = endTime || null;
+
+    if (session.price === 0) {
+      session.status = "accepted";
+    } else {
+      session.status = "payment_pending";
+    }
+
     await session.save();
 
     res.status(200).json({
@@ -202,6 +220,46 @@ export const acceptSession = async (req, res) => {
     });
   } catch (error) {
     console.error("Session Controller Error (acceptSession):", error);
+    res.status(500).json({ message: t("SERVER_ERROR", lang) });
+  }
+};
+
+// @desc    Doctor updates the price of a payment_pending session
+// @route   PUT /api/v1/session/:sessionId/price
+// @access  Private (Doctor)
+export const updateSessionPrice = async (req, res) => {
+  const lang = getLang(req);
+  try {
+    const { sessionId } = req.params;
+    const { price } = req.body;
+    const doctorId = req.user._id;
+
+    const session = await VideoSession.findOne({
+      _id: sessionId,
+      doctor: doctorId,
+    });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    if (session.status !== "payment_pending") {
+      return res.status(400).json({ message: "Session is not payment pending" });
+    }
+
+    session.price = Number(price);
+    
+    if (session.price === 0) {
+      session.status = "accepted";
+    }
+
+    await session.save();
+
+    res.status(200).json({
+      message: "Session price updated",
+      session,
+    });
+  } catch (error) {
+    console.error("Session Controller Error (updateSessionPrice):", error);
     res.status(500).json({ message: t("SERVER_ERROR", lang) });
   }
 };
@@ -384,11 +442,11 @@ export const getDoctorUpcomingAndPendingSessions = async (req, res) => {
     // Run all queries in parallel
     const [upcomingAndPending, completedCount, todayCount, pendingCount] =
       await Promise.all([
-        // 1. Upcoming (accepted) + pending sessions from today onwards
+        // 1. Upcoming (accepted) + pending/payment_pending sessions from today onwards
         VideoSession.find({
           doctor: doctorId,
           date: { $gte: today },
-          status: { $in: ["pending", "accepted"] },
+          status: { $in: ["pending", "payment_pending", "accepted"] },
         })
           .populate("patient", "fullName")
           .sort({ date: 1, time: 1 }),
@@ -414,7 +472,7 @@ export const getDoctorUpcomingAndPendingSessions = async (req, res) => {
       ]);
 
     const upcoming = upcomingAndPending.filter((s) => s.status === "accepted");
-    const pending = upcomingAndPending.filter((s) => s.status === "pending");
+    const pending = upcomingAndPending.filter((s) => s.status === "pending" || s.status === "payment_pending");
 
     res.status(200).json({
       upcoming,
@@ -446,13 +504,13 @@ export const getPatientUpcomingAndPendingSessions = async (req, res) => {
     const sessions = await VideoSession.find({
       patient: patientId,
       date: { $gte: today },
-      status: { $in: ["pending", "accepted"] },
+      status: { $in: ["pending", "payment_pending", "accepted"] },
     })
       .populate("doctor", "fullName specializations")
       .sort({ date: 1, time: 1 });
 
     const upcoming = sessions.filter((s) => s.status === "accepted");
-    const pending = sessions.filter((s) => s.status === "pending");
+    const pending = sessions.filter((s) => s.status === "pending" || s.status === "payment_pending");
 
     res.status(200).json({ upcoming, pending, sessions });
   } catch (error) {

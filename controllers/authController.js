@@ -46,6 +46,15 @@ export const registerPatient = async (req, res) => {
       role: "patient",
     });
 
+    const now = new Date();
+    const twoWeeksLater = new Date(now);
+    twoWeeksLater.setDate(now.getDate() + 14);
+
+    patient.subscription = {
+      plan: "trial",
+      expiresAt: twoWeeksLater,
+    };
+
     await patient.save();
 
     const token = generateToken(patient._id);
@@ -53,13 +62,7 @@ export const registerPatient = async (req, res) => {
     res.status(201).json({
       message: t("REGISTER_SUCCESS", lang),
       token,
-      user: {
-        id: patient._id,
-        fullName: patient.fullName,
-        phone: patient.phone,
-        role: patient.role,
-        gender: patient.gender,
-      },
+      user: patient,
     });
   } catch (error) {
     console.error("Auth Controller Error:", error);

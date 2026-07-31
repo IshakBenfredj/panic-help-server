@@ -21,9 +21,17 @@ const videoSessionSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    endTime: {
+      type: String, // e.g., "11:00"
+      default: null,
+    },
+    price: {
+      type: Number,
+      default: null,
+    },
     status: {
       type: String,
-      enum: ["pending", "accepted", "refused", "completed", "cancelled"],
+      enum: ["pending", "payment_pending", "accepted", "refused", "completed", "cancelled"],
       default: "pending",
     },
     streamCallId: {

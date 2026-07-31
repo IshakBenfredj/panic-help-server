@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import Payment from "../models/Payment.js";
+import VideoSession from "../models/VideoSession.js";
 import { verifySignature } from "@chargily/chargily-pay";
 
 export const handleSubscriptionWebhook = async (req, res) => {
@@ -29,11 +30,59 @@ export const handleSubscriptionWebhook = async (req, res) => {
       return res.status(200).json({ success: true, message: "Event ignored" });
     }
 
-    const { user_id, plan } = event.data.metadata || {};
-    if (plan !== "monthly_3500" || !user_id) {
+    const { type, user_id, plan, sessionId } = event.data.metadata || {};
+    
+    if (type === "video_session") {
+      if (!sessionId) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Missing sessionId in metadata" });
+      }
+
+      const session = await VideoSession.findById(sessionId);
+      if (!session) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Session not found" });
+      }
+
+      session.status = "accepted";
+      await session.save();
+
+      const paymentAmount = event.data.amount || session.price || 0;
+      const payment = new Payment({
+        user: user_id,
+        amount: paymentAmount,
+        currency: "dzd",
+        type: "video_session",
+        status: "completed",
+        paymentMethod: "chargily",
+        description: `دفع جلسة فيديو - ${event.data.id}`,
+        metadata: {
+          checkout_id: event.data.id,
+          session_id: sessionId,
+          amount: paymentAmount,
+        },
+      });
+      await payment.save();
+
+      console.log(`✅ Video Session paid and accepted: ${sessionId}`);
       return res
         .status(200)
-        .json({ success: true, message: "Not a subscription event" });
+        .json({ success: true, message: "Video session updated" });
+    }
+
+    // Default to subscription logic
+    if (plan !== "monthly_500" && plan !== "monthly_3500") {
+      return res
+        .status(200)
+        .json({ success: true, message: "Not a recognized event" });
+    }
+
+    if (!user_id) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing user_id" });
     }
 
     const user = await User.findById(user_id);
@@ -49,13 +98,13 @@ export const handleSubscriptionWebhook = async (req, res) => {
     nextMonth.setMonth(now.getMonth() + 1);
 
     user.subscription = {
-      plan: "monthly_3500",
+      plan: "monthly_500",
       expiresAt: nextMonth,
       sessionsRemaining: 3,
     };
     await user.save();
 
-    const paymentAmount = event.data.amount ?? 3500;
+    const paymentAmount = event.data.amount ?? 500;
     const payment = new Payment({
       user: user_id,
       amount: paymentAmount,
@@ -63,7 +112,7 @@ export const handleSubscriptionWebhook = async (req, res) => {
       type: "subscription",
       status: "completed",
       paymentMethod: "chargily",
-      description: `اشتراك شهري 3500 دج - ${event.data.id}`,
+      description: `اشتراك شهري 500 دج - ${event.data.id}`,
       metadata: {
         checkout_id: event.data.id,
         plan,

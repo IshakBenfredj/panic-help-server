@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Patient from "../models/Patient.js";
 import Questionnaire from "../models/Questionnaire.js";
 import Mood from "../models/Mood.js";
+import AssessmentResult from "../models/AssessmentResult.js";
 import { t, getLang } from "../utils/i18n/index.js";
 
 // @desc    Get all doctors (public listing for patients)
@@ -140,10 +141,15 @@ export const getPatientInfoForDoctor = async (req, res) => {
       date: { $gte: twoWeeksAgo }
     }).sort({ date: -1 });
 
+    const assessments = await AssessmentResult.find({
+      patient: patientId
+    }).sort({ completedAt: -1 });
+
     res.status(200).json({
       patient,
       questionnaire,
       moods,
+      assessments,
     });
   } catch (error) {
     console.error("Doctor Controller Error (getPatientInfoForDoctor):", error);

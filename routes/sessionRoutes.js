@@ -11,6 +11,8 @@ import {
   cancelPendingSessionPatient,
   getDoctorUpcomingAndPendingSessions,
   getPatientUpcomingAndPendingSessions,
+  updateSessionPrice,
+  getSession,
 } from "../controllers/sessionController.js";
 import { protect, authorize } from "../middleware/auth.js";
 
@@ -25,6 +27,12 @@ router.get(
   getDoctorUpcomingAndPendingSessions,
 );
 router.put("/:sessionId/accept", protect, authorize("doctor"), acceptSession);
+router.put(
+  "/:sessionId/price",
+  protect,
+  authorize("doctor"),
+  updateSessionPrice,
+);
 router.put("/:sessionId/refuse", protect, authorize("doctor"), refuseSession);
 router.put(
   "/:sessionId/complete",
@@ -60,5 +68,6 @@ router.put(
   authorize("patient"),
   cancelPendingSessionPatient,
 );
+router.get("/:sessionId", protect, getSession);
 
 export default router;
